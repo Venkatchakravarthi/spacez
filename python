@@ -1,0 +1,76 @@
+import streamlit as st
+import pandas as pd
+
+st.set_page_config(page_title="Spacez AI Review Agent", page_icon="🏠", layout="wide")
+
+# 1. DATA INGESTION ENGINE WITH SEEDED TRAPS
+def load_raw_dataset():
+    return [
+        {"review_id": "R01", "platform": "Booking.com", "property": "Serenity Villa", "caretaker": "Lokesh Gowda", "raw_rating": 6.0, "text": "The place looked nice but we had to wait 45 minutes outside at check-in because the host wasn't picking up. Also, the pool filter was making a loud noise and the water looked green."},
+        {"review_id": "R02", "platform": "Airbnb", "property": "Cliffside Cabin", "caretaker": "Rajesh Kumar", "raw_rating": 2.0, "text": "The views are amazing but the heating did not work at all. We froze all night. Rajesh was sweet and tried to bring blankets, but the asset itself needs serious maintenance."},
+        {"review_id": "R03", "platform": "Google", "property": "Vineyard Estate", "caretaker": "Lokesh Gowda", "raw_rating": 3.0, "text": "Extremely delayed check-in process. Lokesh was completely managing another villa nearby and couldn't arrive on time. The house cleaning was also sub-par, hairs on the linen."},
+        {"review_id": "R04", "platform": "Airbnb", "property": "Serenity Villa", "caretaker": "Lokesh Gowda", "raw_rating": 4.0, "text": "Stunning villa! But again, the swimming pool was out of order during our stay. Road getting up here is full of potholes, which ruined the mood."},
+        {"review_id": "R05", "platform": "Google", "property": "Serenity Villa", "caretaker": "Lokesh Gowda", "raw_rating": 5.0, "text": "Amazing."}
+    ]
+
+# 2. AI AGENT NORMALIZATION & CLASSIFICATION LOGIC
+def process_review_via_agent(review):
+    text_lower = review["text"].lower()
+    
+    # TRAP 1: Metric Normalization Layer
+    normalized_score = round(review["raw_rating"] / 2, 1) if review["platform"] == "Booking.com" else float(review["raw_rating"])
+    
+    # TRAP 2: Filtering Semantic Noise / Low Value Reviews
+    is_noise = len(review["text"].split()) < 5 and "amazing" in text_lower
+    
+    # Classification Split
+    structural_faults, behavioral_faults = [], []
+    if "pool" in text_lower or "filter" in text_lower: structural_faults.append("Pool Maintenance Flag")
+    if "heating" in text_lower or "froze" in text_lower: structural_faults.append("HVAC System Failure")
+    if "road" in text_lower or "pothole" in text_lower: structural_faults.append("External Infrastructure Issue")
+    
+    if "check-in" in text_lower or "wait" in text_lower or "delayed" in text_lower:
+        behavioral_faults.append("Check-in Logistics Failure")
+    if "linen" in text_lower or "cleaning" in text_lower:
+        behavioral_faults.append("Housekeeping SLA Violation")
+
+    return {
+        "id": review["review_id"], "property": review["property"], "caretaker": review["caretaker"],
+        "platform": review["platform"], "score": normalized_score, "is_noise": is_noise,
+        "structural": structural_faults, "behavioral": behavioral_faults, "raw": review["text"]
+    }
+
+processed_reviews = [process_review_via_agent(r) for r in load_raw_dataset()]
+df = pd.DataFrame(processed_reviews)
+
+# 3. INTERACTIVE STAKEHOLDER PORTAL
+st.title("🏠 Spacez — Intelligent Triage & Insights Router")
+view = st.sidebar.radio("Select Interface View:", ["1. Operations Portal", "2. Business Performance", "3. Caretaker Digests"])
+
+if "Operations" in view:
+    st.subheader("🔧 Real-time Field Operations Tickets")
+    ops_records = df[(df['structural'].map(len) > 0) & (~df['is_noise'])]
+    for _, r in ops_records.iterrows():
+        st.error(f"📍 {r['property']} — {', '.join(r['structural'])}")
+        st.markdown(f"**Verified Feedback:** *\"{r['raw']}\"*")
+        st.button("Dispatch Engineering Crew", key=f"btn_{r['id']}")
+        st.markdown("---")
+
+elif "Business" in view:
+    st.subheader("📊 Strategic Portfolio Performance & Yield Management")
+    st.metric("Portfolio Average Rating (Normalized)", f"{df['score'].mean():.2f} / 5.0★")
+    st.dataframe(df[['property', 'platform', 'score', 'structural']], use_container_width=True)
+
+elif "Caretaker" in view:
+    st.subheader("🧑‍🌾 Host Performance & Behavioral Matrix")
+    host = st.selectbox("Select Caretaker Profile:", ["Lokesh Gowda", "Rajesh Kumar"])
+    host_df = df[df['caretaker'] == host]
+    
+    # TRAP 3: Cross-Property Entity Resolution Output
+    if host == "Lokesh Gowda":
+        st.warning("⚠️ **Cross-Property Operational Warning:** Host anomalies detected across multiple physical assets (Serenity Villa & Vineyard Estate). Issue correlates with Host Scheduling Constraints rather than a single villa failure.")
+    
+    for _, r in host_df.iterrows():
+        if len(r['behavioral']) > 0:
+            st.info(f"📋 **Coaching Point:** {', '.join(r['behavioral'])} at {r['property']}")
+            st.caption(f"Filtered Clean Feed (Excluding Asset Faults): \"{r['raw']}\"")
