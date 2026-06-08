@@ -1,95 +1,187 @@
 import streamlit as st
 import pandas as pd
-import json
+import re
 from collections import Counter
 
-
 st.set_page_config(page_title="Spacez Review Intelligence", layout="wide")
+st.title("🏡 Spacez Review Intelligence — Caretaker Control Dashboard")
 
-st.title("🏡 Spacez Review Intelligence — Caretaker Dashboard")
-
-st.sidebar.header("Upload Data")
 uploaded_file = st.sidebar.file_uploader("Upload Reviews Excel File", type=["xlsx"])
 
-openai.api_key = st.sidebar.text_input("Enter OpenAI API Key", type="password")
+# ---------------------------
+# NORMALIZATION
+# ---------------------------
 
-def normalize_rating(row):
-    if row["Platform"] == "Booking.com":
-        return row["Rating"] * 10
+def normalize_rating(platform, rating):
+    if platform.lower() == "booking.com":
+        return rating * 10
     else:
-        return row["Rating"] * 20
+        return rating * 20
 
-def analyze_review(review_text):
-    prompt = f"""
-    You are a hospitality analyst.
-    Analyze this review and return JSON:
+# ---------------------------
+# THEME RULE ENGINE
+# ---------------------------
 
-    {{
-        "themes": [],
-        "controllability": "caretaker/property/vendor/policy/uncontrollable",
-        "severity": 1-5,
-        "caretaker_action_required": true/false,
-        "recommended_action": ""
-    }}
+THEME_RULES = {
+    "cleanliness": ["dirty", "unclean", "dust", "stain", "smell", "filthy"],
+    "check_in": ["late", "delay", "waited", "check in", "check-in"],
+    "pool": ["pool", "water temperature"],
+    "heating": ["heater", "heating", "cold"],
+    "wifi": ["wifi", "internet", "connection"],
+    "road_access": ["road", "approach", "difficult to reach"],
+    "policy_issue": ["policy", "rules", "occupancy"],
+    "noise_low_signal": ["amazing", "great stay", "nice place"]
+}
 
-    Review:
-    {review_text}
-    """
+CARETAKER_CONTROLLED = [
+    "cleanliness",
+    "check_in"
+]
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2
-    )
+PROPERTY_CONTROLLED = [
+    "pool",
+    "heating",
+    "wifi",
+    "road_access"
+]
 
-    return json.loads(response["choices"][0]["message"]["content"])
+POLICY_CONTROLLED = [
+    "policy_issue"
+]
 
-if uploaded_file and openai.api_key:
+# ---------------------------
+# ANALYSIS ENGINE
+# ---------------------------
+
+def extract_themes(review):
+    review_lower = review.lower()
+    themes_found = []
+    for theme, keywords in THEME_RULES.items():
+        for word in keywords:
+            if word in review_lower:
+                themes_found.append(theme)
+                break
+    return list(set(themes_found))
+
+def classify_controllability(themes):
+    controllable = []
+    not_controllable = []
+    for theme in themes:
+        if theme in CARETAKER_CONTROLLED:
+            controllable.append(theme)
+        else:
+            not_controllable.append(theme)
+    return controllable, not_controllable
+
+def severity_score(normalized_score):
+    if normalized_score >= 80:
+        return 1
+    elif normalized_score >= 60:
+        return 2
+    elif normalized_score >= 40:
+        return 3
+    elif normalized_score >= 20:
+        return 4
+    else:
+        return 5
+
+# ---------------------------
+# MAIN LOGIC
+# ---------------------------
+
+if uploaded_file:
     df = pd.read_excel(uploaded_file)
 
-    df["Normalized Score"] = df.apply(normalize_rating, axis=1)
+    df["Normalized Score"] = df.apply(
+        lambda row: normalize_rating(row["Platform"], row["Rating"]), axis=1
+    )
 
-    st.subheader("Select Caretaker")
-    caretaker = st.selectbox("Caretaker", df["Caretaker"].unique())
-
+    caretaker = st.selectbox("Select Caretaker", df["Caretaker"].unique())
     caretaker_df = df[df["Caretaker"] == caretaker]
 
     results = []
+
     for _, row in caretaker_df.iterrows():
-        analysis = analyze_review(row["Review"])
-        analysis["Property"] = row["Property"]
-        analysis["Normalized Score"] = row["Normalized Score"]
-        results.append(analysis)
+        themes = extract_themes(row["Review"])
+        controllable, not_controllable = classify_controllability(themes)
+        severity = severity_score(row["Normalized Score"])
+
+        results.append({
+            "Property": row["Property"],
+            "Themes": themes,
+            "Controllable": controllable,
+            "Not Controllable": not_controllable,
+            "Severity": severity
+        })
 
     result_df = pd.DataFrame(results)
 
-    st.subheader("📊 Caretaker Influence Summary")
+    # ---------------------------
+    # DASHBOARD OUTPUT
+    # ---------------------------
 
-    controllable = result_df[result_df["controllability"] == "caretaker"]
-    not_controllable = result_df[result_df["controllability"] != "caretaker"]
+    st.header("📊 Caretaker Influence Summary")
 
-    st.metric("Total Reviews", len(result_df))
-    st.metric("Caretaker-Controllable Issues", len(controllable))
-    st.metric("Not Caretaker Responsibility", len(not_controllable))
+    total_reviews = len(result_df)
+    total_controllable = sum(len(x) for x in result_df["Controllable"])
+    total_not_controllable = sum(len(x) for x in result_df["Not Controllable"])
 
-    st.subheader("🔁 Recurring Controllable Themes")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Reviews", total_reviews)
+    col2.metric("Caretaker-Controllable Mentions", total_controllable)
+    col3.metric("Not Your Responsibility Mentions", total_not_controllable)
 
-    all_themes = []
-    for themes in controllable["themes"]:
-        all_themes.extend(themes)
+    # Recurring controllable themes
+    st.subheader("🔁 Recurring Caretaker-Controlled Issues")
 
-    theme_counts = Counter(all_themes)
+    all_controllable = []
+    for themes in result_df["Controllable"]:
+        all_controllable.extend(themes)
+
+    theme_counts = Counter(all_controllable)
     recurring = {k: v for k, v in theme_counts.items() if v > 1}
 
     if recurring:
         st.write(recurring)
     else:
-        st.write("No recurring caretaker-controlled issues.")
+        st.write("No recurring caretaker-controlled patterns detected.")
 
-    st.subheader("🎯 Recommended Actions")
-    for action in controllable["recommended_action"]:
-        st.write("-", action)
+    # Pattern following caretaker across properties
+    st.subheader("🧠 Cross-Property Pattern Detection")
 
+    pattern_property_map = {}
+    for _, row in result_df.iterrows():
+        for theme in row["Controllable"]:
+            if theme not in pattern_property_map:
+                pattern_property_map[theme] = set()
+            pattern_property_map[theme].add(row["Property"])
+
+    cross_property_patterns = {
+        theme: props
+        for theme, props in pattern_property_map.items()
+        if len(props) > 1
+    }
+
+    if cross_property_patterns:
+        for theme, props in cross_property_patterns.items():
+            st.warning(f"{theme} appears across properties: {list(props)}")
+    else:
+        st.success("No cross-property behavioral pattern detected.")
+
+    # Not your responsibility section
     st.subheader("🛡 Not Your Responsibility")
-    for theme in not_controllable["themes"]:
-        st.write("-", theme)
+
+    all_not_controllable = []
+    for themes in result_df["Not Controllable"]:
+        all_not_controllable.extend(themes)
+
+    not_counts = Counter(all_not_controllable)
+
+    if not_counts:
+        st.write(dict(not_counts))
+    else:
+        st.write("No external issues detected.")
+
+    # Raw view
+    with st.expander("See Detailed Breakdown"):
+        st.dataframe(result_df)
